@@ -63,7 +63,6 @@ data_types:
         type: string
         required: false
         default: ""
-
       extra_compss_opts:
         type: string
         required: false
@@ -79,6 +78,7 @@ data_types:
       user_name:
         type: string
         description: user used to connect to the cluster may be overridden by a workflow input
+        required: false
 
 artifact_types:
   org.eflows4hpc.pycompss.plugin.artifacts.Deployment:
@@ -98,26 +98,18 @@ node_types:
       application:
         type: org.eflows4hpc.pycompss.plugin.types.COMPSsApplication
         required: false
-
-      input_data_path:
-        type: string
-        required: false
-        default: "/tmp"
-      output_data_path:
-        type: string
-        required: false
-        default: "/tmp"
-    # requirements:
-    #   - img_transfer:
-    #       capability: tosca.capabilities.Node
-    #       node: dls.ansible.nodes.DLSDAGImageTransfer
-    #       relationship: tosca.relationships.DependsOn
-    #       occurrences: [ 0, UNBOUNDED ]
+    requirements:
+      - img_transfer:
+          capability: tosca.capabilities.Node
+          relationship: tosca.relationships.DependsOn
+          occurrences: [ 0, UNBOUNDED ]
+      - environment:
+          capability: eflows4hpc.env.capabilities.ExecutionEnvironment
+          relationship: tosca.relationships.DependsOn
+          occurrences: [ 0, UNBOUNDED ]
     interfaces:
       tosca.interfaces.node.lifecycle.Runnable:
         submit:
-          inputs:
-            # transferred_container_image: { get_attribute: [ REQ_TARGET, img_transfer, image_file_path] }
           implementation:
             file: "embedded"
             type: org.eflows4hpc.pycompss.plugin.artifacts.Deployment
@@ -130,3 +122,7 @@ node_types:
             file: "embedded"
             type: org.eflows4hpc.pycompss.plugin.artifacts.Deployment
 
+capability_types:
+  eflows4hpc.env.capabilities.ExecutionEnvironment:
+    # Redefine it here to simplify dependencies
+    derived_from: tosca.capabilities.Node

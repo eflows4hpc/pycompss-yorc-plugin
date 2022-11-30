@@ -9,6 +9,7 @@ imports:
   - tosca-normative-types:1.0.0-ALIEN20
   - yorc-types:1.1.0
   - alien-base-types:3.0.0
+  - eflows4hpc.env:1.0.0-SNAPSHOT
 
 artifact_types:
   tosca.artifacts.Deployment.Image.Container.Docker:
@@ -17,6 +18,7 @@ artifact_types:
 
 data_types:
   org.eflows4hpc.pycompss.plugin.types.ContainerOptions:
+    derived_from: tosca.datatypes.Root
     properties:
       container_image:
         type: string
@@ -32,6 +34,7 @@ data_types:
         default: ""
 
   org.eflows4hpc.pycompss.plugin.types.COMPSsApplication:
+    derived_from: tosca.datatypes.Root
     properties:
       command:
         type: string
@@ -47,6 +50,7 @@ data_types:
 
 
   org.eflows4hpc.pycompss.plugin.types.SubmissionParams:
+    derived_from: tosca.datatypes.Root
     properties:
       compss_modules:
         type: list
@@ -67,7 +71,6 @@ data_types:
         type: string
         required: false
         default: ""
-
       extra_compss_opts:
         type: string
         required: false
@@ -75,6 +78,7 @@ data_types:
 
 
   org.eflows4hpc.pycompss.plugin.types.Environment:
+    derived_from: tosca.datatypes.Root
     properties:
       endpoint:
         type: string
@@ -83,6 +87,7 @@ data_types:
       user_name:
         type: string
         description: user used to connect to the cluster may be overridden by a workflow input
+        required: false
 
 node_types:
   org.eflows4hpc.pycompss.plugin.nodes.PyCOMPSJob:
@@ -101,26 +106,18 @@ node_types:
       application:
         type: org.eflows4hpc.pycompss.plugin.types.COMPSsApplication
         required: false
-
-      input_data_path:
-        type: string
-        required: false
-        default: "/tmp"
-      output_data_path:
-        type: string
-        required: false
-        default: "/tmp"
-    # requirements:
-    #   - img_transfer:
-    #       capability: tosca.capabilities.Node
-    #       node: dls.ansible.nodes.DLSDAGImageTransfer
-    #       relationship: tosca.relationships.DependsOn
-    #       occurrences: [ 0, UNBOUNDED ]
+    requirements:
+      - img_transfer:
+          capability: tosca.capabilities.Node
+          relationship: tosca.relationships.DependsOn
+          occurrences: [ 0, UNBOUNDED ]
+      - environment:
+          capability: eflows4hpc.env.capabilities.ExecutionEnvironment
+          relationship: tosca.relationships.DependsOn
+          occurrences: [ 0, UNBOUNDED ]
     interfaces:
       tosca.interfaces.node.lifecycle.Runnable:
         submit:
-          inputs:
-            # transferred_container_image: { get_attribute: [ REQ_TARGET, img_transfer, image_file_path] }
           implementation:
             file: "types.yaml"
             type: tosca.artifacts.Deployment.Image.Container.Docker

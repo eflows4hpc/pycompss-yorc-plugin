@@ -20,12 +20,9 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/mitchellh/mapstructure"
-	"github.com/ystia/yorc/v4/deployments"
 	"github.com/ystia/yorc/v4/events"
 	"github.com/ystia/yorc/v4/helper/executil"
 	"github.com/ystia/yorc/v4/helper/sshutil"
@@ -107,13 +104,25 @@ func (e *Execution) Execute(ctx context.Context) error {
 }
 
 func (e *Execution) resolveJobParams(ctx context.Context) (*pycompssJobParams, error) {
-	params := &pycompssJobParams{}
+	params := &pycompssJobParams{
+		ExtraEnv: map[string]string{},
+	}
 	err := e.resolveNodeProperties(ctx, params)
 	if err != nil {
 		return params, err
 	}
 
 	err = e.resolvePropertiesFromWFInputs(ctx, params)
+	if err != nil {
+		return params, err
+	}
+
+	err = e.resolvePropertiesFromEnvRequirement(ctx, params)
+	if err != nil {
+		return params, err
+	}
+
+	err = e.getContainerImageFromRequirement(ctx, params)
 	return params, err
 }
 
@@ -124,96 +133,6 @@ func (e *Execution) ResolveExecution(ctx context.Context) error {
 
 	e.privateKeyVaultSecret, e.vaultID, err = getPrivateKeyAndVaultID(e.TaskID)
 	return err
-}
-
-func (e *Execution) resolvePropertiesFromWFInputs(ctx context.Context, params *pycompssJobParams) error {
-	user, err := tasks.GetTaskInput(e.TaskID, "user")
-	if err != nil && !tasks.IsTaskDataNotFoundError(err) {
-		return err
-	}
-	if user != "" {
-		params.Environment.UserName = user
-	}
-
-	data, err := tasks.GetAllTaskData(e.TaskID)
-	if err != nil && !tasks.IsTaskDataNotFoundError(err) {
-		return err
-	}
-	for key, d := range data {
-		if strings.HasPrefix(key, "inputs/PyCOMPSs_") {
-			params.ExtraEnv[strings.TrimPrefix(key, "inputs/PyCOMPSs_")] = d
-		}
-	}
-	for key, d := range data {
-		prefix := fmt.Sprintf("inputs/%s_PyCOMPSs_", e.NodeName)
-		if strings.HasPrefix(key, prefix) {
-			params.ExtraEnv[strings.TrimPrefix(key, prefix)] = d
-		}
-	}
-
-	numNodes, err := tasks.GetTaskInput(e.TaskID, fmt.Sprintf("%s_num_nodes", e.NodeName))
-	if err != nil && !tasks.IsTaskDataNotFoundError(err) {
-		return err
-	}
-	if numNodes != "" {
-		nn, err := strconv.Atoi(numNodes)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s_num_nodes input: %w", e.NodeName, err)
-		}
-		params.SubmissionParams.NumNodes = nn
-	}
-
-	return nil
-}
-
-func (e *Execution) resolveNodeProperties(ctx context.Context, params *pycompssJobParams) error {
-	rawEnv, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "environment")
-	if err != nil {
-		return err
-	}
-	var env Environment
-	if rawEnv != nil && rawEnv.RawString() != "" {
-		err = mapstructure.Decode(rawEnv.Value, &env)
-		if err != nil {
-			return fmt.Errorf("failed to decode environment property for node %q: %w", e.NodeName, err)
-		}
-		params.Environment = env
-	}
-
-	rawSubParams, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "submission_params")
-	if err != nil {
-		return err
-	}
-	var subParams SubmissionParams
-	if rawSubParams != nil && rawSubParams.RawString() != "" {
-		config := &mapstructure.DecoderConfig{
-			WeaklyTypedInput: true,
-			Result:           &subParams,
-		}
-		decoder, err := mapstructure.NewDecoder(config)
-		if err != nil {
-			return fmt.Errorf("failed to decode submission_params property for node %q: %w", e.NodeName, err)
-		}
-		err = decoder.Decode(rawSubParams.Value)
-		if err != nil {
-			return fmt.Errorf("failed to decode submission_params property for node %q: %w", e.NodeName, err)
-		}
-		params.SubmissionParams = subParams
-	}
-
-	rawApp, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "application")
-	if err != nil {
-		return err
-	}
-	var app COMPSsApplication
-	if rawApp != nil && rawApp.RawString() != "" {
-		err = mapstructure.Decode(rawApp.Value, &app)
-		if err != nil {
-			return fmt.Errorf("failed to decode application property for node %q: %w", e.NodeName, err)
-		}
-		params.CompssApplication = app
-	}
-	return nil
 }
 
 var reEnvIDInit = regexp.MustCompile(`Environment ID: (\w+)`)
@@ -237,82 +156,76 @@ func (e *Execution) initPycompss(ctx context.Context, agent *sshutil.SSHAgent, p
 }
 
 func (e *Execution) deployPycompssApp(ctx context.Context, envID, appName string, agent *sshutil.SSHAgent) error {
-	cmd := executil.Command(ctx, "pycompss", "env", "change", envID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute pycompss command to change to env %s: %w", envID, err)
-	}
-
 	dir, err := os.MkdirTemp("", "pycompss-app-")
 	if err != nil {
 		return fmt.Errorf("fail to create temporary directory to deploy PyCOMPSs application: %w", err)
 	}
 	defer os.RemoveAll(dir)
 
-	cmd = executil.Command(ctx, "pycompss", "app", "deploy", appName)
+	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env change %s ; pycompss app deploy %s", agent.Socket, envID, appName))
 	cmd.Dir = dir
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	err = cmd.Run()
+	output, err := cmd.CombinedOutput()
+	log.Debugf("app deploy output: %s", output)
 	if err != nil {
 		return fmt.Errorf("failed to execute pycompss command to deploy application %s: %w", appName, err)
 	}
 	return nil
 }
 
-func (e *Execution) generateSubmitCommandArgs(pcJob *pycompssJob) []string {
+func (e *Execution) generateSubmitCommandArgs(pcJob *pycompssJob, agent *sshutil.SSHAgent) string {
+	args := fmt.Sprintf("export SSH_AUTH_SOCK=%s ; ", agent.Socket)
+	for envKey, envVal := range pcJob.JobParams.ExtraEnv {
+		if !strings.Contains(envKey, "-") {
+			args += fmt.Sprintf("export %s=%q ; ", envKey, envVal)
+		}
+	}
+	args += fmt.Sprintf("pycompss env change %s ; ", pcJob.JobInfo.EnvironmentID)
 
-	// TODO(loicalbertin) data paths
-	args := []string{"job", "submit", "-app", pcJob.JobInfo.AppName, "-d"}
+	args += fmt.Sprintf("pycompss job submit -app %s -d ", pcJob.JobInfo.AppName)
 
 	if pcJob.JobParams.SubmissionParams.NumNodes != 0 {
-		args = append(args, fmt.Sprintf("--num_nodes=%d", pcJob.JobParams.SubmissionParams.NumNodes))
+		args += fmt.Sprintf("--num_nodes=%d ", pcJob.JobParams.SubmissionParams.NumNodes)
 	}
 	if pcJob.JobParams.SubmissionParams.Qos != "" {
-		args = append(args, fmt.Sprintf("--qos=%s", pcJob.JobParams.SubmissionParams.Qos))
+		args += fmt.Sprintf("--qos=%s ", pcJob.JobParams.SubmissionParams.Qos)
 	}
 	if pcJob.JobParams.SubmissionParams.PythonInterpreter != "" {
-		args = append(args, fmt.Sprintf("--python_interpreter=%s", pcJob.JobParams.SubmissionParams.PythonInterpreter))
+		args += fmt.Sprintf("--python_interpreter=%s ", pcJob.JobParams.SubmissionParams.PythonInterpreter)
 	}
 	if pcJob.JobParams.SubmissionParams.ExtraCompssOpts != "" {
-		args = append(args, pcJob.JobParams.SubmissionParams.ExtraCompssOpts)
+		args += fmt.Sprintf("%s ", pcJob.JobParams.SubmissionParams.ExtraCompssOpts)
 	}
 
 	if pcJob.JobParams.CompssApplication.ContainerOpts.ContainerImage != "" {
-		args = append(args, fmt.Sprintf("--container_image=%s", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerImage))
+		args += fmt.Sprintf("--container_image=%s ", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerImage)
 	}
 
 	if pcJob.JobParams.CompssApplication.ContainerOpts.ContainerCompssPath != "" {
-		args = append(args, fmt.Sprintf("--container_compss_path=%s", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerCompssPath))
+		args += fmt.Sprintf("--container_compss_path=%s ", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerCompssPath)
 	}
 
 	if pcJob.JobParams.CompssApplication.ContainerOpts.ContainerOpts != "" {
-		args = append(args, fmt.Sprintf("--container_opts=%s", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerOpts))
+		args += fmt.Sprintf("--container_opts=%s ", pcJob.JobParams.CompssApplication.ContainerOpts.ContainerOpts)
 	}
 	// Application command & args should be at the end
-	args = append(args, pcJob.JobParams.CompssApplication.Command)
-	args = append(args, pcJob.JobParams.CompssApplication.Arguments...)
+	args += pcJob.JobParams.CompssApplication.Command + " "
+	args += strings.Join(pcJob.JobParams.CompssApplication.Arguments, " ")
 	return args
 }
 
 var reJobIDSubmit = regexp.MustCompile(`Job submitted: (\d+)`)
 
 func (e *Execution) submitPycompss(ctx context.Context, agent *sshutil.SSHAgent, pcJob *pycompssJob) (string, error) {
-	cmd := executil.Command(ctx, "pycompss", "env", "change", pcJob.JobInfo.EnvironmentID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("failed to execute pycompss command to change to env %s: %w", pcJob.JobInfo.EnvironmentID, err)
-	}
 
-	cmd = executil.Command(ctx, "pycompss", e.generateSubmitCommandArgs(pcJob)...)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	for envKey, envVal := range pcJob.JobParams.ExtraEnv {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", envKey, envVal))
-	}
-
+	cmd := executil.Command(ctx, "bash", "-c", e.generateSubmitCommandArgs(pcJob, agent))
+	events.WithContextOptionalFields(ctx).NewLogEntry(events.LogLevelDEBUG, e.DeploymentID).Registerf(
+		"Running PyCOMPSs submission command: %s ", strings.Join(cmd.Args, " "))
+	stderr := &strings.Builder{}
+	cmd.Stderr = stderr
 	stdout, err := cmd.Output()
 	if err != nil {
+		log.Debugf("failed to execute pycompss command to submit job stderr:\n%s", stderr.String())
+		log.Debugf("failed to execute pycompss command to submit job stdout:\n%s", stdout)
 		return "", fmt.Errorf("failed to execute pycompss command to submit job: %w", err)
 	}
 	subMatches := reJobIDSubmit.FindStringSubmatch(string(stdout))
@@ -362,15 +275,7 @@ func (e *Execution) cancelJob(originalCtx context.Context) error {
 	}
 	defer agent.Stop()
 
-	cmd := executil.Command(ctx, "pycompss", "env", "change", pcJob.JobInfo.EnvironmentID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	err = cmd.Run()
-	if err != nil {
-		return fmt.Errorf("failed to execute pycompss command to change to env %s: %w", pcJob.JobInfo.EnvironmentID, err)
-	}
-
-	cmd = executil.Command(ctx, "pycompss", "job", "cancel", pcJob.JobInfo.JobID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
+	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env change %s ; pycompss job cancel %s", agent.Socket, pcJob.JobInfo.EnvironmentID, pcJob.JobInfo.JobID))
 	err = cmd.Run()
 	if err != nil {
 		return fmt.Errorf("failed to execute pycompss command to cancel job %s: %w", pcJob.JobInfo.JobID, err)

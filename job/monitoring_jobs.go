@@ -118,13 +118,22 @@ func (o *ActionOperator) monitorJob(ctx context.Context, cfg config.Configuratio
 		return false, err
 	}
 	var finalError *multierror.Error
+	log.Debugf("found status: %q", status)
 	switch status {
 	case jobStateRunning, jobStatePending, jobStateCompleting:
 		// Nothing to do here
 	case jobStateCompleted:
 		deregister = true
+		err = o.removeJobEnv(ctx, agent, actionData)
+		if err != nil {
+			finalError = multierror.Append(finalError, err)
+		}
 	case jobStateFailed:
 		deregister = true
+		err = o.removeJobEnv(ctx, agent, actionData)
+		if err != nil {
+			finalError = multierror.Append(finalError, err)
+		}
 		finalError = multierror.Append(finalError, fmt.Errorf("job %q with id: %q ended in error", actionData.nodeName, actionData.job.JobInfo.JobID))
 	case jobStateCheckFailed:
 		events.WithContextOptionalFields(ctx).NewLogEntry(events.LogLevelWARN, deploymentID).Registerf(
@@ -147,25 +156,29 @@ func (o *ActionOperator) monitorJob(ctx context.Context, cfg config.Configuratio
 var reJobStatus = regexp.MustCompile(`(PENDING|RUNNING|COMPLETING|COMPLETED:SUCCESS|COMPLETED:ERROR|CHECK FAIL)`)
 
 func (o *ActionOperator) monitorJobStatus(ctx context.Context, agent *sshutil.SSHAgent, actionData *actionData) (string, error) {
-
-	cmd := executil.Command(ctx, "pycompss", "env", "change", actionData.job.JobInfo.EnvironmentID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
-	err := cmd.Run()
-	if err != nil {
-		return "", fmt.Errorf("failed to execute pycompss command to change to env %s: %w", actionData.job.JobInfo.EnvironmentID, err)
-	}
-
-	cmd = executil.Command(ctx, "pycompss", "job", "status", actionData.job.JobInfo.JobID)
-	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
+	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env change %s ; pycompss job status %s", agent.Socket, actionData.job.JobInfo.EnvironmentID, actionData.job.JobInfo.JobID))
 
 	stdout, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to execute pycompss command to retrieve status: %w", err)
 	}
+	log.Debugf("status command result: %s\n", stdout)
 
 	subMatches := reJobStatus.FindStringSubmatch(string(stdout))
 	if subMatches == nil || len(subMatches) != 2 {
 		return "", fmt.Errorf("fail to retrieve PyCOMPSs job status in command return: %s", stdout)
 	}
 	return subMatches[1], nil
+}
+
+func (o *ActionOperator) removeJobEnv(ctx context.Context, agent *sshutil.SSHAgent, actionData *actionData) error {
+	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env remove -f %s", agent.Socket, actionData.job.JobInfo.EnvironmentID))
+
+	output, err := cmd.CombinedOutput()
+	log.Debugf("env remove output: %s", output)
+	if err != nil {
+		return fmt.Errorf("failed to execute pycompss command to remove environment: %w", err)
+	}
+
+	return nil
 }
