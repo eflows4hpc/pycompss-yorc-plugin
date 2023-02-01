@@ -41,6 +41,7 @@ type pycompssJobParams struct {
 }
 
 type pycompssJob struct {
-	JobInfo   *jobInfo           `json:"job_info,omitempty"`
-	JobParams *pycompssJobParams `json:"job_params,omitempty"`
+	JobInfo         *jobInfo           `json:"job_info,omitempty"`
+	JobParams       *pycompssJobParams `json:"job_params,omitempty"`
+	KeepEnvironment bool               `json:"keep_environment,omitempty"`
 }

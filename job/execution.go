@@ -61,14 +61,13 @@ func (e *Execution) Execute(ctx context.Context) error {
 		events.WithContextOptionalFields(ctx).NewLogEntry(events.LogLevelINFO, e.DeploymentID).Registerf(
 			"Submitting Job %q", e.NodeName)
 
-		params, err := e.resolveJobParams(ctx)
-		if err != nil {
-			return err
+		pcJob := &pycompssJob{
+			JobInfo: &jobInfo{},
 		}
 
-		pcJob := &pycompssJob{
-			JobParams: params,
-			JobInfo:   &jobInfo{},
+		err := e.resolveJobParams(ctx, pcJob)
+		if err != nil {
+			return err
 		}
 
 		err = e.submitJob(ctx, pcJob)
@@ -103,27 +102,26 @@ func (e *Execution) Execute(ctx context.Context) error {
 	return err
 }
 
-func (e *Execution) resolveJobParams(ctx context.Context) (*pycompssJobParams, error) {
-	params := &pycompssJobParams{
+func (e *Execution) resolveJobParams(ctx context.Context, pcJob *pycompssJob) error {
+	pcJob.JobParams = &pycompssJobParams{
 		ExtraEnv: map[string]string{},
 	}
-	err := e.resolveNodeProperties(ctx, params)
+	err := e.resolveNodeProperties(ctx, pcJob)
 	if err != nil {
-		return params, err
+		return err
 	}
 
-	err = e.resolvePropertiesFromWFInputs(ctx, params)
+	err = e.resolvePropertiesFromWFInputs(ctx, pcJob.JobParams)
 	if err != nil {
-		return params, err
+		return err
 	}
 
-	err = e.resolvePropertiesFromEnvRequirement(ctx, params)
+	err = e.resolvePropertiesFromEnvRequirement(ctx, pcJob.JobParams)
 	if err != nil {
-		return params, err
+		return err
 	}
 
-	err = e.getContainerImageFromRequirement(ctx, params)
-	return params, err
+	return e.getContainerImageFromRequirement(ctx, pcJob.JobParams)
 }
 
 // ResolveExecution resolves inputs and artifacts before the execution of an operation
@@ -144,6 +142,7 @@ func (e *Execution) initPycompss(ctx context.Context, agent *sshutil.SSHAgent, p
 	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
 
 	stdout, err := cmd.Output()
+	log.Debugf("[%s] init remote output: %s", e.NodeName, stdout)
 	if err != nil {
 		return "", fmt.Errorf("failed to execute pycompss command to initialize environment: %w", err)
 	}
@@ -152,6 +151,7 @@ func (e *Execution) initPycompss(ctx context.Context, agent *sshutil.SSHAgent, p
 	if subMatches == nil || len(subMatches) != 2 {
 		return "", fmt.Errorf("fail to retrieve PyCOMPSs environment id in init command return: %s", string(stdout))
 	}
+	log.Debugf("[%s] init remote environment ID: %q", e.NodeName, subMatches[1])
 	return subMatches[1], nil
 }
 
@@ -162,10 +162,12 @@ func (e *Execution) deployPycompssApp(ctx context.Context, envID, appName string
 	}
 	defer os.RemoveAll(dir)
 
-	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env change %s ; pycompss app deploy %s", agent.Socket, envID, appName))
+	// cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; export PYCOMPSS_CLI_DEBUG=true; pycompss --env_id %s app deploy %s", agent.Socket, envID, appName))
+	cmd := executil.Command(ctx, "pycompss", "--env_id", envID, "app", "deploy", appName)
+	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket), "PYCOMPSS_CLI_DEBUG=true")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
-	log.Debugf("app deploy output: %s", output)
+	log.Debugf("[%s] app deploy output: %s", e.NodeName, output)
 	if err != nil {
 		return fmt.Errorf("failed to execute pycompss command to deploy application %s: %w", appName, err)
 	}
@@ -179,9 +181,7 @@ func (e *Execution) generateSubmitCommandArgs(pcJob *pycompssJob, agent *sshutil
 			args += fmt.Sprintf("export %s=%q ; ", envKey, envVal)
 		}
 	}
-	args += fmt.Sprintf("pycompss env change %s ; ", pcJob.JobInfo.EnvironmentID)
-
-	args += fmt.Sprintf("pycompss job submit -app %s -d ", pcJob.JobInfo.AppName)
+	args += fmt.Sprintf("pycompss --env_id %s job submit -app %s -d ", pcJob.JobInfo.EnvironmentID, pcJob.JobInfo.AppName)
 
 	if pcJob.JobParams.SubmissionParams.NumNodes != 0 {
 		args += fmt.Sprintf("--num_nodes=%d ", pcJob.JobParams.SubmissionParams.NumNodes)
@@ -223,9 +223,9 @@ func (e *Execution) submitPycompss(ctx context.Context, agent *sshutil.SSHAgent,
 	stderr := &strings.Builder{}
 	cmd.Stderr = stderr
 	stdout, err := cmd.Output()
+	log.Debugf("[%s] pycompss command to submit job stdout:\n%s", e.NodeName, stdout)
+	log.Debugf("[%s] pycompss command to submit job stderr:\n%s", e.NodeName, stderr.String())
 	if err != nil {
-		log.Debugf("failed to execute pycompss command to submit job stderr:\n%s", stderr.String())
-		log.Debugf("failed to execute pycompss command to submit job stdout:\n%s", stdout)
 		return "", fmt.Errorf("failed to execute pycompss command to submit job: %w", err)
 	}
 	subMatches := reJobIDSubmit.FindStringSubmatch(string(stdout))
@@ -275,7 +275,9 @@ func (e *Execution) cancelJob(originalCtx context.Context) error {
 	}
 	defer agent.Stop()
 
-	cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss env change %s ; pycompss job cancel %s", agent.Socket, pcJob.JobInfo.EnvironmentID, pcJob.JobInfo.JobID))
+	// cmd := executil.Command(ctx, "bash", "-c", fmt.Sprintf("export SSH_AUTH_SOCK=%s ; pycompss --env_id %s job cancel %s", agent.Socket, pcJob.JobInfo.EnvironmentID, pcJob.JobInfo.JobID))
+	cmd := executil.Command(ctx, "pycompss", "--env_id", pcJob.JobInfo.EnvironmentID, "job", "cancel", pcJob.JobInfo.JobID)
+	cmd.Env = append(cmd.Env, fmt.Sprintf("SSH_AUTH_SOCK=%s", agent.Socket))
 	err = cmd.Run()
 	if err != nil {
 		return fmt.Errorf("failed to execute pycompss command to cancel job %s: %w", pcJob.JobInfo.JobID, err)

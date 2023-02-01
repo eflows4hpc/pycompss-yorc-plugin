@@ -98,6 +98,12 @@ node_types:
       application:
         type: org.eflows4hpc.pycompss.plugin.types.COMPSsApplication
         required: false
+
+      keep_environment:
+        type: boolean
+        default: false
+        required: false
+        description: keep pycompss environment for troubleshooting
     requirements:
       - img_transfer:
           capability: tosca.capabilities.Node

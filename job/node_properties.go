@@ -119,7 +119,8 @@ func (e *Execution) resolvePropertiesFromWFInputs(ctx context.Context, params *p
 	return err
 }
 
-func (e *Execution) resolveNodeProperties(ctx context.Context, params *pycompssJobParams) error {
+func (e *Execution) resolveNodeProperties(ctx context.Context, pcJob *pycompssJob) error {
+
 	rawEnv, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "environment")
 	if err != nil {
 		return err
@@ -130,7 +131,7 @@ func (e *Execution) resolveNodeProperties(ctx context.Context, params *pycompssJ
 		if err != nil {
 			return fmt.Errorf("failed to decode environment property for node %q: %w", e.NodeName, err)
 		}
-		params.Environment = env
+		pcJob.JobParams.Environment = env
 	}
 
 	rawSubParams, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "submission_params")
@@ -151,7 +152,7 @@ func (e *Execution) resolveNodeProperties(ctx context.Context, params *pycompssJ
 		if err != nil {
 			return fmt.Errorf("failed to decode submission_params property for node %q: %w", e.NodeName, err)
 		}
-		params.SubmissionParams = subParams
+		pcJob.JobParams.SubmissionParams = subParams
 	}
 
 	rawApp, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "application")
@@ -164,7 +165,18 @@ func (e *Execution) resolveNodeProperties(ctx context.Context, params *pycompssJ
 		if err != nil {
 			return fmt.Errorf("failed to decode application property for node %q: %w", e.NodeName, err)
 		}
-		params.CompssApplication = app
+		pcJob.JobParams.CompssApplication = app
+	}
+
+	rawKeepEnv, err := deployments.GetNodePropertyValue(ctx, e.DeploymentID, e.NodeName, "keep_environment")
+	if err != nil {
+		return err
+	}
+	if rawKeepEnv != nil && rawKeepEnv.RawString() != "" {
+		pcJob.KeepEnvironment, err = strconv.ParseBool(rawKeepEnv.RawString())
+		if err != nil {
+			return fmt.Errorf("fail to parse boolean value %q for node %q: %w", rawKeepEnv.String(), e.NodeName, err)
+		}
 	}
 	return nil
 }
