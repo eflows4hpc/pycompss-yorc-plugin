@@ -1,37 +1,97 @@
-
-
-# This is a basic workflow to help you get started with Actions
-
 name: Release
-
-# Controls when the action will run.
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'version to be released'
+        required: true
+        default: ''
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  # This workflow contains a single job called "build"
   release:
-    # The type of runner that the job will run on
+
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v2
+    - uses: actions/checkout@v2
+    - name: Configure Git user
+      run: |
+        git config user.email "actions@github.com"
+        git config user.name "GitHub Actions"
+    - name: Setup Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+    - name: Cache pip
+      uses: actions/cache@v2
+      with:
+        # This path is specific to Ubuntu
+        path: ~/.cache/pip
+        # Look to see if there is a cache hit for the corresponding requirements file
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+          ${{ runner.os }}-
+    - name: Install dependencies
+      run: pip install semantic_version
 
-      - name: build
-        uses: docker://golang:1
-        with:
-          args: /bin/bash -c "CGO_ENABLED=0 go build ."
-        env:
-          XDG_CACHE_HOME: /tmp/.cache
-          HOME: /tmp/buildhome
+    - name: Tag and push a release
+      id: release
+      run: |
+        ./build/release.sh -v "${{ github.event.inputs.release_version }}"
+        read -r major minor patch prerelease build <<< $(python -c "import semantic_version; v = semantic_version.Version('${{ github.event.inputs.release_version }}'); print(v.major, v.minor, v.patch, '.'.join(v.prerelease), '.'.join(v.build));")
+        if [[ -z "${prerelease}" ]] ; then
+            echo "PRERELEASE=false" >> $GITHUB_ENV
+        else
+            echo "PRERELEASE=true" >> $GITHUB_ENV
+        fi
+        tagName="v${{ github.event.inputs.release_version }}"
+        echo "TAG_NAME=${tagName}" >> $GITHUB_ENV
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v1
-        with:
-          files: pycompss-yorc-plugin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout tag
+      uses: actions/checkout@v2
+      with:
+        ref: ${{ env.TAG_NAME }}
+
+    - name: Generate artifacts and changelog
+      run: |
+        cd tosca/alien
+        zip -r org-eflows4hpc-pycompss-plugin-tosca-${RELEASE_VERSION}.zip *
+      env:
+        RELEASE_VERSION: ${{ github.event.inputs.release_version }}
+
+    - name: build
+      uses: docker://golang:1
+      with:
+        args: /bin/bash -c "CGO_ENABLED=0 go build ."
+      env:
+        XDG_CACHE_HOME: /tmp/.cache
+        HOME: /tmp/buildhome
+
+    - name: Create or Update Github Release draft
+      id: update_release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ env.TAG_NAME }}
+        name: ${{ env.TAG_NAME }}
+        prerelease: ${{ env.PRERELEASE }}
+        draft: true
+        files: |
+          tosca/alien/org-eflows4hpc-pycompss-plugin-tosca-*.zip
+          pycompss-yorc-plugin
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Publish Github Release
+      uses: eregon/publish-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        release_id: ${{ steps.update_release.outputs.id }}
