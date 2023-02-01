@@ -9,7 +9,7 @@ imports:
   - tosca-normative-types:1.0.0-ALIEN20
   - yorc-types:1.1.0
   - alien-base-types:3.0.0
-  - eflows4hpc.env:1.0.0-SNAPSHOT
+  - eflows4hpc.env:1.0.0
 
 artifact_types:
   tosca.artifacts.Deployment.Image.Container.Docker:
