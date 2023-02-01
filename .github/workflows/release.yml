@@ -43,7 +43,7 @@ jobs:
     - name: Tag and push a release
       id: release
       run: |
-        ./build/release.sh -v "${{ github.event.inputs.release_version }}"
+        ./scripts/release.sh -v "${{ github.event.inputs.release_version }}"
         read -r major minor patch prerelease build <<< $(python -c "import semantic_version; v = semantic_version.Version('${{ github.event.inputs.release_version }}'); print(v.major, v.minor, v.patch, '.'.join(v.prerelease), '.'.join(v.build));")
         if [[ -z "${prerelease}" ]] ; then
             echo "PRERELEASE=false" >> $GITHUB_ENV
