@@ -70,7 +70,7 @@ jobs:
     - name: build
       uses: docker://golang:1
       with:
-        args: /bin/bash -c "CGO_ENABLED=0 go build ."
+        args: /bin/bash -c "CGO_ENABLED=0 go build -buildvcs=false -v ."
       env:
         XDG_CACHE_HOME: /tmp/.cache
         HOME: /tmp/buildhome
