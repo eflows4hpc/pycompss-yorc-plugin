@@ -1,0 +1,28 @@
+name: Release
+on:
+  push:
+
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Configure Git user
+      run: |
+        git config user.email "actions@github.com"
+        git config user.name "GitHub Actions"
+
+    - name: build
+      uses: docker://golang:1
+      with:
+        args: /bin/bash -c "CGO_ENABLED=0 go build -v ."
+      env:
+        XDG_CACHE_HOME: /tmp/.cache
+        HOME: /tmp/buildhome
