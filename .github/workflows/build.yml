@@ -13,11 +13,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v2
     - name: Configure Git user
       run: |
         git config user.email "actions@github.com"
         git config user.name "GitHub Actions"
+    - uses: actions/checkout@v2
 
     - name: build
       uses: docker://golang:1
